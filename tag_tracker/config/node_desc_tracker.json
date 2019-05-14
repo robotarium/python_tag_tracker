@@ -6,6 +6,9 @@
 	},
 	"requests": 
 	[
+		{"link": "21/status",
+		 "required": false,
+		 "type": "DATA"},
 		{"link": "1/status",
 		 "required": false,
 		 "type": "DATA"},
