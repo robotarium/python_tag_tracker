@@ -36,6 +36,12 @@ def load_camera_calib(filename):
 
 
 def load_ref_markers(filename):
+    """ Load reference markers from a YAML file.  These markers determine the workspace area.
+
+        Args: 
+            filename (str): Path to YAML file containing the reference marker locations and IDs
+    """
+
     # Load what should be detector parameters in a YAML file
     try:
         f = open(filename, 'r')
@@ -50,7 +56,6 @@ def load_ref_markers(filename):
     ref_markers_world = np.zeros((len(markers), 2)) 
 
     for i, m in enumerate(markers):
-        print(i)
         ref_markers[m['id']] = i
         ref_markers_world[i, :] = np.array((m['x'], m['y']))
 
