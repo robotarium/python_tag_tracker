@@ -13,6 +13,9 @@ def main():
     parser.add_argument('--calib', help='path to camera calibration (YAML file)', default='config/camera_calib.yml')
     parser.add_argument('--dev', type=int, help='Input video device number', default=0)
     parser.add_argument('--output', help='Output path for homography (YAML file)', default='./output.yaml')
+    parser.add_argument('--width', type=int, help='Width of camera frame (pixels)', default=1280)
+    parser.add_argument('--height', type=int, help='Height of camera frame (pixels)', default=720)
+
     parser.add_argument('ref', help='path to camera calibration (YAML file)')
 
     args = parser.parse_args()
@@ -23,8 +26,8 @@ def main():
         print("Could not open video camera.  Exiting")
         return
 
-    cap.set(3, 1920)
-    cap.set(4, 1080)
+    cap.set(3, args.width)
+    cap.set(4, args.height)
     # Have to change codec for frame rate!!
 
     codec = cv.VideoWriter_fourcc('M', 'J', 'P', 'G')
@@ -86,13 +89,14 @@ def main():
         if(H is not None):
             try:
                 f = open(args.output, 'w+')
+                print('Saving homography in file:', args.output)
+                yaml.dump({'homography': H.tolist()}, f)
+                f.close()
             except Exception as e:
                 print(repr(e))
                 return
 
-            yaml.dump({'homography': H.tolist()}, f)
-            f.close()
-
+            
             print('Homography found.  Exiting')
             break
 
