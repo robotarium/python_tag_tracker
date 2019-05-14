@@ -1,7 +1,6 @@
 import cv2 as cv
 from cv2 import aruco
 import argparse
-import json
 import vizier.mqttinterface as mqtt
 import numpy as np
 import time
@@ -10,30 +9,27 @@ import queue
 import yaml
 import json
 
-TEXT_OFFSET = np.array((10, 10)) 
-TEXT_COLOR = (100, 30, 120) 
 
-fs = cv.FileStorage('config/camera_calib.yml', cv.FILE_STORAGE_READ)
-cam_matrix = fs.getNode('camera_matrix').mat()
-dist_coeffs = fs.getNode('distortion_coefficients').mat()
-proj_matrix = fs.getNode('projection_matrix').mat()
-marker_length = 0.01
+# Global objects for grabbing frames in the background
+FRAME_QUEUE = queue.Queue()
+RUNNING = True
+TIMEOUT = 5
 
-q = queue.Queue()
-q_lock = threading.Lock()
-MAX_Q_SIZE = 5
-running = True
-
-timeout = 5
 
 def load_detector_params(filename, params):
+    """ Loads AruCo detector parameters from a file and stores them in the AruCo parameter dictionary.
+
+    Args:
+        filename (str): representing path to parameter YAML file
+        params: AruCo parameter dictionary
+    """
 
     # Load what should be detector parameters in a YAML file
     try:
         f = open(filename, 'r')
         f_yaml = yaml.load(f)
     except Exception as e:
-        return
+        print(repr(e))
 
     # Get the keys so we can easily set the params object
     keys = list(f_yaml.keys())
@@ -42,66 +38,130 @@ def load_detector_params(filename, params):
         setattr(params, k, f_yaml[k])
 
 
+def load_camera_calib(filename):
+    """ Loads OpenCV camera calibration data from a calibration YAML file.
+
+    Args:
+        filename (str): Path to OpenCV YAML file
+    """
+
+    # Get the keys so we can easily set the params object
+    try:
+        fs = cv.FileStorage(filename, cv.FILE_STORAGE_READ)
+    except Exception as e:
+        print(repr(e))
+        raise e
+
+    cam_matrix = fs.getNode('camera_matrix').mat()
+    dist_coeffs = fs.getNode('distortion_coefficients').mat()
+    proj_matrix = fs.getNode('projection_matrix').mat()
+
+    return (cam_matrix, dist_coeffs, proj_matrix)
+
+
+def load_homography(filename):
+    """ Loads OpenCV homography from a YAML file.
+
+        Args:
+            filename (str): Path to homography YAML file
+    """
+
+    # Load what should be detector parameters in a YAML file
+    try:
+        f = open(filename, 'r')
+        f_yaml = yaml.load(f)
+    except Exception as e:
+        print(repr(e))
+
+    return np.array(f_yaml['homography'])
+
+
 def read_from_camera(cap):
-    global running
-    global q_lock
-    global q
+    """ Meant to be run from a thread.  Loads frames into a global queue.
 
-    while(running):
+    Args:
+        cap: OpenCV capture object (e.g., webcam)
+    """
+
+    global RUNNING
+    global FRAME_QUEUE
+
+    while(RUNNING):
         result = cap.read()
-        q.put(result)
+        FRAME_QUEUE.put(result)
 
-#class State(enumeration):
-
-reference_markers = {29: 0, 21: 3, 27: 2, 49: 1}
-ref_markers_world = np.array([[0, 0], [0, 1], [1, 1], [1, 0]])
 
 def main():
 
-    global cap_lock
-    global running
-    global reference_markers
+    global RUNNING
+    global FRAME_QUEUE
 
-    state = 0
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--params', help='path to detector AruCo parameters (YAML file)', default='config/detector_params.yml')
+    parser.add_argument('--calib', help='path to camera calibration (YAML file)', default='config/camera_calib.yml')
+    parser.add_argument('--dev', type=int, help='Input video device number', default=0)
+    parser.add_argument('--output', help='Output path for homography (YAML file)', default='./output.yaml')
+    parser.add_argument('--width', type=int, help='Width of camera frame (pixels)', default=1920)
+    parser.add_argument('--height', type=int, help='Height of camera frame (pixels)', default=1080)
+    parser.add_argument('--host', help='IP of MQTT broker', default='localhost')
+    parser.add_argument('--port', help='Port of MQTT broker', default=1884)
+    parser.add_argument('hom', help='path to homography (YAML file)')
 
-    cap = cv.VideoCapture(0)
+    args = parser.parse_args()
+
+    # TODO: Implement as Vizier node
+    # MQTT client for now
+    mqtt_client = mqtt.MQTTInterface(host=args.host, port=args.port)
+
+    cap = cv.VideoCapture(args.dev)
     alpha = 0.5
 
     if not cap.isOpened():
         print("Could not open video camera.  Exiting")
         return
 
-    cap.set(3, 1920)
-    cap.set(4, 1080)
-    # Have to change codec for frame rate!!
+    cap.set(3, args.width)
+    cap.set(4, args.height)
 
+    # HAVE to change codec for frame rate
     codec = cv.VideoWriter_fourcc('M', 'J', 'P', 'G')
     cap.set(cv.CAP_PROP_FOURCC, codec);
     # Apparently, we NEED to set FPS here...
     cap.set(cv.CAP_PROP_FPS, 30)
 
+        
+    # Load aruco parameters from file
+    aruco_dict = aruco.Dictionary_get(aruco.DICT_4X4_50)
+    parameters = aruco.DetectorParameters_create()
+    load_detector_params(args.params, parameters)
+
+    # Load camera calibration from file
+    cam_matrix, dist_coeffs, proj_matrix = load_camera_calib(args.calib)
+
+    # Load homography from file
+    H = load_homography(args.hom)
+
+    # Start camera capture thread in backgroun
     t = threading.Thread(target=read_from_camera, args=(cap,))
     t.start()
 
-    aruco_dict = aruco.Dictionary_get(aruco.DICT_4X4_50)
-    parameters = aruco.DetectorParameters_create()
-    load_detector_params('config/detector_params.yml', parameters)
+    # Start MQTT client
+    mqtt_client.start()
 
+    # Initialize exponential filter for FPS
     avg_proc_time = 0.033
-    iterations = 0
-
-    H = np.eye(3)
 
     while(True):
 
+        # Time loop for approximate FPS count
         start = time.time()
 
-        ret, frame = q.get(timeout=timeout)
+        ret, frame = FRAME_QUEUE.get(timeout=TIMEOUT)
 
         # ret, frame are now set and the queue is empty after this block
         while True:
             try:
-                ret, frame = q.getnowait()
+                ret, frame = FRAME_QUEUE.getnowait()
             except Exception as e:
                 break
 
@@ -112,43 +172,39 @@ def main():
         # convert to grayscale and find markers with aruco
         gray = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
         corners, ids, rejectecdImgPoints = aruco.detectMarkers(gray, aruco_dict, parameters=parameters)
-        
-        if(len(corners) > 0):
-            for i in range(ids.shape[0]):
-                cv.undistortPoints(corners[i], cam_matrix, dist_coeffs, P=proj_matrix, dst=corners[i])
-        #rvecs, tvecs, _ = aruco.estimatePoseSingleMarkers(corners, marker_length, cam_matrix, dist_coeffs)
 
         # I can do what I want with corners now
         aruco.drawDetectedMarkers(gray, corners, ids, (0, 255, 0))
 
-        ref_markers_image = np.zeros((4, 2))
-        if ids is not None:
+        if(len(corners) > 0):
             for i in range(ids.shape[0]):
-                if(ids[i][0] in reference_markers):
-                    ref_markers_image[reference_markers[ids[i][0]], :] = np.mean(corners[i][0], axis=0) # Compute mean along columns
-
-        if(ref_markers_image.shape == ref_markers_world.shape):
-            H = cv.findHomography(ref_markers_image, ref_markers_world)[0]
-
-        print(H)
-
+                cv.undistortPoints(corners[i], cam_matrix, dist_coeffs, dst=corners[i], P=proj_matrix)
+        
         poses = {}
         if(len(corners) > 0):
             for i in range(ids.shape[0]):
+                # Convert points to homogeneous -> homography -> convert back
                 hom = cv.convertPointsToHomogeneous(np.array([np.mean(corners[i][0], axis=0)]))
                 cv.transform(hom, H, dst=hom)
                 tag_pos = cv.convertPointsFromHomogeneous(hom)
-                print(tag_pos)
-
                 hom = cv.convertPointsToHomogeneous(corners[i][0])
-                cv.transform(hom, H, dst=hom)
-                tag_pos = cv.convertPointsFromHomogeneous(hom)
-                print(tag_pos)
 
+                # DON'T use dst=hom here.  Seems to mess with the calculations
+                hom = cv.transform(hom, H)
+                tag_pos = cv.convertPointsFromHomogeneous(hom)
+
+                # Compute position as the average of the positions of the four corners
                 position = (tag_pos[0][0] + tag_pos[1][0] + tag_pos[2][0] + tag_pos[3][0])/4
-                forward_vector = (tag_pos[0][0] + tag_pos[2][0] - tag_pos[0][0] - tag_pos[3][0])/2
-                poses[ids[i][0]] = {'x': position[0], 'y': position[1], 'theta': np.math.atan2(forward_vector[1], forward_vector[0])}
-        
+
+                # TODO: What is this?
+                forward_vector = (tag_pos[1][0] + tag_pos[2][0] - tag_pos[0][0] - tag_pos[3][0])/2
+
+                poses[repr(ids[i][0])] = {'x': float(position[0]),
+                                    'y': float(position[1]),
+                                    'theta': float(np.math.atan2(forward_vector[1], forward_vector[0]))}
+
+        # Send poses
+        mqtt_client.send_message('overhead_tracker/all_robot_pose_data', json.dumps(poses).encode())
         print(poses)
 
         #for i in range(len(rvecs)):
@@ -159,18 +215,27 @@ def main():
 
         # GRAPHICS STUFF
 
-        cv.putText(gray, 'FPS: ' + repr(int(1/avg_proc_time)) + ' <- should be > 30', (10, 30), cv.FONT_HERSHEY_PLAIN, 1, (255, 255, 255), thickness=1)
-        cv.putText(gray, 'Q: ' + repr(q.qsize()) + ' <- should be small', (10, 50), cv.FONT_HERSHEY_PLAIN, 1, (255, 255, 255), thickness=1)
+        cv.putText(gray, 'FPS: ' + repr(int(1/avg_proc_time)) + ' <- should be > 30',
+                   (10, 30), cv.FONT_HERSHEY_PLAIN, 1, (255, 255, 255), thickness=1)
+        cv.putText(gray, 'Q: ' + repr(FRAME_QUEUE.qsize()) + ' <- should be small',
+                   (10, 50), cv.FONT_HERSHEY_PLAIN, 1, (255, 255, 255), thickness=1)
 
+        # Display image
         cv.imshow('Frame', gray)
 
+        # If 'q' is pressed in the frame, exit the loop and the program
         if(cv.waitKey(1) == ord('q')):
             break
-   
-    running = False
+
+    # Stop MQTT client
+    mqtt_client.stop() 
+
+    # Terminate the thread that's running in the background
+    RUNNING = False
     t.join()
     cap.release()
     cv.destroyAllWindows()
+
 
 if __name__ == "__main__":
     main();

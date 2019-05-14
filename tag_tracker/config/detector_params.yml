@@ -1,8 +1,8 @@
 #YAML:1.0
 #nmarkers: 1024
-adaptiveThreshWinSizeMin: 13
-adaptiveThreshWinSizeMax: 13
-adaptiveThreshWinSizeStep: 10
+adaptiveThreshWinSizeMin: 20
+adaptiveThreshWinSizeMax: 20
+adaptiveThreshWinSizeStep: 5
 #adaptiveThreshWinSize: 21
 adaptiveThreshConstant: 7
 minMarkerPerimeterRate: 0.03
