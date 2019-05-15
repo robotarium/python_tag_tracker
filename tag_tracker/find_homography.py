@@ -6,6 +6,8 @@ import yaml
 
 from tag_tracker.utils import *
 
+_VISIBLE_COLOR = (250, 255, 250)
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--params', help='path to detector AruCo parameters (YAML file)', default='config/detector_params.yml')
@@ -56,7 +58,7 @@ def main():
         corners, ids, rejectecdImgPoints = aruco.detectMarkers(gray, aruco_dict, parameters=parameters)
 
         # I can do what I want with corners now
-        aruco.drawDetectedMarkers(gray, corners, ids, (0, 255, 0))
+        aruco.drawDetectedMarkers(gray, corners, ids, _VISIBLE_COLOR)
 
         if(len(corners) > 0):
             for i in range(ids.shape[0]):
@@ -90,7 +92,6 @@ def main():
             except Exception as e:
                 print(repr(e))
                 return
-
             
             print('Homography written successfully.  Exiting')
             break
