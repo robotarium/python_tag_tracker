@@ -30,7 +30,7 @@ ENV ROBO_PORT ${ROBO_PORT}
 ENTRYPOINT python3 python_tag_tracker/tag_tracker/tracker.py \
 		--host ${ROBO_HOST} \
 		--port ${ROBO_PORT} \
-		python_tag_tracker/config/node_descriptor.json \
-		python_tag_tracker/config/reference_markers.yml
+		python_tag_tracker/config/node_desc_tracker.json \
+		python_tag_tracker/config/reference_markers_setup.yml
 		
 CMD [ ]
