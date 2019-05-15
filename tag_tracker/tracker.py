@@ -97,7 +97,7 @@ def main():
     parser.add_argument('--width', type=int, help='Width of camera frame (pixels)', default=1920)
     parser.add_argument('--height', type=int, help='Height of camera frame (pixels)', default=1080)
     parser.add_argument('--host', help='IP of MQTT broker', default='localhost')
-    parser.add_argument('--port', help='Port of MQTT broker', default=1884)
+    parser.add_argument('--port', type=int, help='Port of MQTT broker', default=1884)
     parser.add_argument('--query', help='How often to query robots for status data (e.g., battery voltage)', type=float, default=2)
     
     parser.add_argument('desc', help='Path to Vizier node descriptor for tracker (JSON file)')
