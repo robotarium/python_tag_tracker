@@ -21,70 +21,84 @@ VISIBLE_COLOR = (255, 255, 255)
 
 
 # Global objects for grabbing frames in the background
-FRAME_QUEUE = queue.Queue()
-RUNNING = True
 TIMEOUT = 5
 
-def get_data_task(tracker_node, ids, poses, running):
+def get_data(tracker_node, ids, poses, getting_data, running, query_every=2):
+    """ Queries robots for status data (e.g., battery voltage) over the vizier network.  This function
+    is meant to be called from a separate thread and run asynchronously.
 
+    Args:
+        tracker_node: Vizier node for tracker
+        ids: list of robot ids as strings
+        poses: dictionary containing robot data
+        getting_data: dictionary containing Boolean values to declare whether valid data is being received from a particular robot
+        running: Determines if the thread keeps running
+        query_every: Determines how ofter this thread queries the robots.  4 equally spaced attempts will be made to query the robots.  
+            For example, if query_every=2, then 4 attempts with a 0.5 s timeout will be made to query the robots.
+
+    """
+
+    # Set up executor for asynchronous operation.  Allow one worker for each possible query 
     executor = futures.ThreadPoolExecutor(max_workers=len(ids))
+    # 
     links = list([i+'/status' for i in ids])
 
-    while running:
+    attempts = 4
+
+    while running[0]:
         current_time = time.time()
         data = []
         try:
-            data = list(executor.map(lambda x: tracker_node.get(x, timeout=0.5, attempts=4), links, timeout=3))
+            data = list(executor.map(lambda x: tracker_node.get(x, timeout=0.5, attempts=attempts), links, timeout=2*query_every))
         except Exception as e:
             print(repr(e))
 
         for i, d in enumerate(data):
             tag = ids[i]
-            print(tag in poses)
-            if tag in poses and d is not None:
+            if d is not None:
                 try:
                     d = json.loads(d)
                     poses[tag].update(d)
-                    print('UPDATED')
+                    getting_data[tag]['viz'] = True
                 except Exception as e:
+                    getting_data[tag]['viz'] = False
                     print(repr(e))
+            else:
+                getting_data[tag]['viz'] = False
 
-            print(data)
+            print('Got data:', d, 'from robot', tag)
             # TODO: Make this sleep for at most 2 seconds
-            time.sleep(max(0, 2 - (time.time() - current_time)))
+            time.sleep(max(0, query_every - (time.time() - current_time)))
 
-    print('Get data task stopped')
+    print('get_data thread stopped')
 
 
-def read_from_camera(cap):
+def read_from_camera(cap, frame_queue, running):
     """ Meant to be run from a thread.  Loads frames into a global queue.
 
     Args:
         cap: OpenCV capture object (e.g., webcam)
     """
 
-    global RUNNING
-    global FRAME_QUEUE
-
-    while(RUNNING):
+    while running[0]:
         result = cap.read()
-        FRAME_QUEUE.put(result)
+        frame_queue.put(result)
+
+    print('read_from_camera thread stopped')
 
 
 def main():
-
-    global RUNNING
-    global FRAME_QUEUE
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--params', help='path to detector AruCo parameters (YAML file)', default='config/detector_params.yml')
     parser.add_argument('--calib', help='path to camera calibration (YAML file)', default='config/camera_calib.yml')
     parser.add_argument('--dev', type=int, help='Input video device number', default=0)
     parser.add_argument('--output', help='Output path for homography (YAML file)', default='./output.yaml')
-    parser.add_argument('--width', type=int, help='Width of camera frame (pixels)', default=1280)
-    parser.add_argument('--height', type=int, help='Height of camera frame (pixels)', default=720)
+    parser.add_argument('--width', type=int, help='Width of camera frame (pixels)', default=1920)
+    parser.add_argument('--height', type=int, help='Height of camera frame (pixels)', default=1080)
     parser.add_argument('--host', help='IP of MQTT broker', default='localhost')
     parser.add_argument('--port', help='Port of MQTT broker', default=1884)
+    parser.add_argument('--query', help='How often to query robots for status data (e.g., battery voltage)', type=float, default=2)
     
     parser.add_argument('desc', help='Path to Vizier node descriptor for tracker (JSON file)')
     parser.add_argument('ref', help='Path to reference marker (YAML file)')
@@ -138,24 +152,26 @@ def main():
     reference_markers, _ = load_ref_markers(args.ref)
 
     # Start camera capture thread in backgroun
-    t = threading.Thread(target=read_from_camera, args=(cap,))
-    t.start()
+    read_from_camera_running = [True]
+    frame_queue = queue.Queue()
+    read_from_camera_thread = threading.Thread(target=read_from_camera, args=(cap, frame_queue, read_from_camera_running))
+    read_from_camera_thread.start()
 
 
-    possible_ids = {x.split('/')[0] for x in tracker_node.gettable_links}
-    print(possible_ids)
-    # TODO: Keep track of whether the ID is being tracker and whether it's responding to GET
-    # TODO: We can send messages based on that
-    poses = {}
+    possible_ids = set({x.split('/')[0] for x in tracker_node.gettable_links})
+    poses = dict({x : {'x': 0, 'y': 0, 'theta': 0, 'batt_volt': -1, 'charge_status': False} for x in possible_ids})
+    getting_data = dict({x : {'viz': False, 'image': False} for x in possible_ids})
 
-    get_data_thread_running = True
-    get_data_thread = threading.Thread(target=get_data_task, args=(tracker_node, list(possible_ids), poses, get_data_thread_running))
+    print('Tracking robots:', list(possible_ids).sort())
+    
+    # This is a list containing a bool so we can pass by reference
+    get_data_thread_running = [True]
+    get_data_thread = threading.Thread(target=get_data, args=(tracker_node, list(possible_ids), poses, getting_data, get_data_thread_running), kwargs={'query_every': args.query})
     get_data_thread.start()
 
     # Start MQTT client
-    #mqtt_client.start()
     tracker_node.start()
-
+    publish_topic = list(tracker_node.publishable_links)[0]
 
     # Initialize exponential filter for FPS
     avg_proc_time = 0.033
@@ -168,12 +184,12 @@ def main():
         # Time loop for approximate FPS count
         start = time.time()
 
-        ret, frame = FRAME_QUEUE.get(timeout=TIMEOUT)
+        ret, frame = frame_queue.get(timeout=TIMEOUT)
 
         # ret, frame are now set and the queue is empty after this block
         while True:
             try:
-                ret, frame = FRAME_QUEUE.get_nowait()
+                ret, frame = frame_queue.get_nowait()
             except queue.Empty as e:
                 break
 
@@ -189,16 +205,17 @@ def main():
         aruco.drawDetectedMarkers(gray, corners, ids, VISIBLE_COLOR)
 
         # Determine poses of robots from image coordinates
+        to_send = {}
         if(len(corners) > 0):
             for i in range(ids.shape[0]):
                 tag_id = ids[i][0]
                 tag_id_str = repr(tag_id)
 
-                if(tag_id_str not in possible_ids):
-                    print('Got id:', tag_id, 'not in possible ids (see node descriptor)')
+                if(tag_id in reference_markers):
                     continue
 
-                if(tag_id in reference_markers):
+                if(tag_id_str not in possible_ids):
+                    print('Got id:', tag_id, 'not in possible ids (see node descriptor)')
                     continue
 
                 cv.undistortPoints(corners[i], cam_matrix, dist_coeffs, dst=corners[i], P=proj_matrix)
@@ -218,21 +235,24 @@ def main():
 
                 # TODO: What is this?
                 forward_vector = 0.5*(tag_pos[1][0] + tag_pos[2][0] - tag_pos[0][0] - tag_pos[3][0])
-        
+
                 # Assemble poses JSON in the assumed format
                 # TODO: If I want to share this between threads, I can't re-init the dict.  It blows away the other changes
-                poses[tag_id_str] = {
-                        'x': round(float(position[0]), 2),
-                        'y': round(float(position[1]), 2),
-                        'theta': round(float(np.math.atan2(forward_vector[1], forward_vector[0])), 2),
-                        }
+                poses[tag_id_str]['x'] = round(float(position[0]), 2)
+                poses[tag_id_str]['y'] = round(float(position[1]), 2)
+                poses[tag_id_str]['theta'] = round(float(np.math.atan2(forward_vector[1], forward_vector[0])), 2)
 
-        # Send poses
-        if(len(poses) > 0):
-            tracker_node.publish('overhead_tracker/all_robot_pose_data', json.dumps(poses).encode())
-            #mqtt_client.send_message('overhead_tracker/all_robot_pose_data', json.dumps(poses).encode())
+                getting_data[tag_id_str]['image'] = True
+
+                # Only send pose of active robots
+                if(getting_data[tag_id_str]['image'] and getting_data[tag_id_str]['viz']):
+                    to_send[tag_id_str] = poses[tag_id_str]
+
+        # Send poses on 
+        if(len(to_send) > 0):
+            tracker_node.publish(publish_topic, json.dumps(to_send).encode())
         
-        print(poses)
+        print(to_send)
 
         #for i in range(len(rvecs)):
             #aruco.drawAxis(gray, cam_matrix, dist_coeffs, rvecs[i], tvecs[i], 0.1)
@@ -241,11 +261,12 @@ def main():
         elapsed = time.time() - start
         avg_proc_time = (1-alpha)*avg_proc_time + alpha*elapsed
 
+
         # GRAPHICS STUFF
 
         cv.putText(gray, 'FPS: ' + repr(int(1/avg_proc_time)) + ' <- should be > 30',
                    (10, 30), cv.FONT_HERSHEY_PLAIN, 1, VISIBLE_COLOR, thickness=1)
-        cv.putText(gray, 'Q: ' + repr(FRAME_QUEUE.qsize()) + ' <- should be small',
+        cv.putText(gray, 'Q: ' + repr(frame_queue.qsize()) + ' <- should be small',
                    (10, 50), cv.FONT_HERSHEY_PLAIN, 1, VISIBLE_COLOR, thickness=1)
 
         # Display image
@@ -256,14 +277,14 @@ def main():
             break
 
     # Stop MQTT client
-    #mqtt_client.stop() 
     tracker_node.stop()
 
     # Terminate the thread that's running in the background
-    get_data_thread_running = False
-    RUNNING = False
-    t.join()
+    get_data_thread_running[0] = False
+    read_from_camera_running[0] = False
+    read_from_camera_thread.join()
     get_data_thread.join()
+
     cap.release()
     cv.destroyAllWindows()
 
