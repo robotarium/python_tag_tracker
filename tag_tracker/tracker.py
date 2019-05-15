@@ -17,7 +17,7 @@ from tag_tracker.utils import *
 # TODO: Integrate with Vizier and start getting information from robots
 
 # OpenCV colors
-VISIBLE_COLOR = (255, 255, 255)
+_VISIBLE_COLOR = (255, 255, 255)
 
 
 # Global objects for grabbing frames in the background
@@ -102,7 +102,7 @@ def main():
     
     parser.add_argument('desc', help='Path to Vizier node descriptor for tracker (JSON file)')
     parser.add_argument('ref', help='Path to reference marker (YAML file)')
-    parser.add_argument('hom', help='path to homography (YAML file)')
+    #parser.add_argument('hom', help='path to homography (YAML file)')
 
     args = parser.parse_args()
 
@@ -143,10 +143,10 @@ def main():
     cam_matrix, dist_coeffs, proj_matrix = load_camera_calib(args.calib)
 
     # Load homography from file
-    H = load_homography(args.hom)
+    #H = load_homography(args.hom)
 
     # Load reference markers so we can ignore them
-    reference_markers, _ = load_ref_markers(args.ref)
+    reference_markers, ref_markers_world = load_ref_markers(args.ref)
 
     # Start camera capture thread in backgroun
     read_from_camera_running = [True]
@@ -158,7 +158,7 @@ def main():
     poses = dict({x : {'x': 0, 'y': 0, 'theta': 0, 'batt_volt': -1, 'charge_status': False} for x in possible_ids})
     getting_data = dict({x : {'viz': False, 'image': False} for x in possible_ids})
 
-    print('Tracking robots:', list(possible_ids).sort())
+    print('Tracking robots:', possible_ids)
     
     # This is a list containing a bool so we can pass by reference
     get_data_thread_running = [True]
@@ -175,6 +175,70 @@ def main():
     alpha = 0.1
 
 
+    # FIND HOMOGRAPHY
+    H = None
+    while(True):
+
+        ret, frame = frame_queue.get(timeout=TIMEOUT)
+
+        # ret, frame are now set and the queue is empty after this block
+        while True:
+            try:
+                ret, frame = frame_queue.get_nowait()
+            except queue.Empty as e:
+                break
+
+        if(not ret):
+            print('Could not get frame')
+            continue
+
+        # convert to grayscale and find markers with aruco
+        gray = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
+        corners, ids, rejectecdImgPoints = aruco.detectMarkers(gray, aruco_dict, parameters=parameters)
+
+        # I can do what I want with corners now
+        aruco.drawDetectedMarkers(gray, corners, ids, _VISIBLE_COLOR)
+
+        if(len(corners) > 0):
+            for i in range(ids.shape[0]):
+                cv.undistortPoints(corners[i], cam_matrix, dist_coeffs, dst=corners[i], P=proj_matrix)
+
+        # Find homography from image data
+
+        ref_markers_image = np.zeros((len(reference_markers), 2))
+        found = 0
+        if ids is not None:
+           for i in range(ids.shape[0]):
+                if(ids[i][0] in reference_markers):
+                    found += 1
+                    ref_markers_image[reference_markers[ids[i][0]], :] = np.mean(corners[i][0], axis=0) # Compute mean along columns
+
+        H = None
+        if found == len(reference_markers):
+            print('Found', '('+repr(found)+')', 'all', '('+repr(len(reference_markers))+')', 'reference markers.  Calculating homography')
+            H = cv.findHomography(ref_markers_image, ref_markers_world)[0]
+
+        
+        if H is not None:
+            if(abs(np.linalg.det(H)) <= 0.001):
+                print('Warning: H is close to losing invertibility')
+
+            print('Homography found.  Beginning tracking')
+            break
+
+        
+        # GRAPHICS
+        cv.putText(gray, 'Searching for reference_markers: ' + repr([x for x in reference_markers]),
+                   (10, 30), cv.FONT_HERSHEY_PLAIN, 1, (255, 255, 255), thickness=1)
+
+        cv.imshow('Tag Tracker', gray)
+
+        if(cv.waitKey(1) == ord('q')):
+            break
+
+
+
+    # TRACKING LOOP
     while(True):
 
         # Time loop for approximate FPS count
@@ -198,7 +262,7 @@ def main():
         corners, ids, rejectecdImgPoints = aruco.detectMarkers(gray, aruco_dict, parameters=parameters)
 
         # I can do what I want with corners now
-        aruco.drawDetectedMarkers(gray, corners, ids, VISIBLE_COLOR)
+        aruco.drawDetectedMarkers(gray, corners, ids, _VISIBLE_COLOR)
 
         # Determine poses of robots from image coordinates
         to_send = {}
@@ -261,12 +325,12 @@ def main():
         # GRAPHICS STUFF
 
         cv.putText(gray, 'FPS: ' + repr(int(1/avg_proc_time)) + ' <- should be > 30',
-                   (10, 30), cv.FONT_HERSHEY_PLAIN, 1, VISIBLE_COLOR, thickness=1)
+                   (10, 30), cv.FONT_HERSHEY_PLAIN, 1, _VISIBLE_COLOR, thickness=1)
         cv.putText(gray, 'Q: ' + repr(frame_queue.qsize()) + ' <- should be small',
-                   (10, 50), cv.FONT_HERSHEY_PLAIN, 1, VISIBLE_COLOR, thickness=1)
+                   (10, 50), cv.FONT_HERSHEY_PLAIN, 1, _VISIBLE_COLOR, thickness=1)
 
         # Display image
-        cv.imshow('Frame', gray)
+        cv.imshow('Tag Tracker', gray)
 
         # If 'q' is pressed in the frame, exit the loop and the program
         if(cv.waitKey(1) == ord('q')):
