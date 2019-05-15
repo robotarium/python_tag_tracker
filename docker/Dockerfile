@@ -30,6 +30,8 @@ ENV ROBO_PORT ${ROBO_PORT}
 ENTRYPOINT python3 python_tag_tracker/tag_tracker/tracker.py \
 		--host ${ROBO_HOST} \
 		--port ${ROBO_PORT} \
+		--calib python_tag_tracker/config/camera_calib.yml \
+		--params python_tag_tracker/config/detector_params.yml \
 		python_tag_tracker/config/node_desc_tracker.json \
 		python_tag_tracker/config/reference_markers_setup.yml
 		
