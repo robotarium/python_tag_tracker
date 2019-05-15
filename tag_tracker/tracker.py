@@ -1,6 +1,6 @@
-import cv2 as cv
-from cv2 import aruco
 import argparse
+from cv2 import aruco
+import cv2 as cv
 import vizier.node as node
 import vizier.mqttinterface as mqtt
 import numpy as np
@@ -117,9 +117,6 @@ def main():
 
     tracker_node = node.Node(args.host, args.port, node_descriptor)
 
-    # TODO: Implement as Vizier node.  Implement as MQTT client for now
-    #mqtt_client = mqtt.MQTTInterface(host=args.host, port=args.port)
-
     # Set up capture device.  Should be a webcam!
     cap = cv.VideoCapture(args.dev)
  
@@ -156,7 +153,6 @@ def main():
     frame_queue = queue.Queue()
     read_from_camera_thread = threading.Thread(target=read_from_camera, args=(cap, frame_queue, read_from_camera_running))
     read_from_camera_thread.start()
-
 
     possible_ids = set({x.split('/')[0] for x in tracker_node.gettable_links})
     poses = dict({x : {'x': 0, 'y': 0, 'theta': 0, 'batt_volt': -1, 'charge_status': False} for x in possible_ids})
@@ -214,7 +210,7 @@ def main():
                 if(tag_id in reference_markers):
                     continue
 
-                if(tag_id_str not in possible_ids):
+                if tag_id_str not in possible_ids:
                     print('Got id:', tag_id, 'not in possible ids (see node descriptor)')
                     continue
 

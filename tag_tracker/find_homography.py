@@ -6,7 +6,9 @@ import yaml
 
 from tag_tracker.utils import *
 
+
 _VISIBLE_COLOR = (250, 255, 250)
+
 
 def main():
     parser = argparse.ArgumentParser()
