@@ -14,21 +14,20 @@ cd path/to/python_tag_tracker
 python3 -m pip install -e .
 ```
 
-# Requires
+# Requirements
 
 These are the required packages/modules to run the tag tracker.
 
 ## Linux
 
-```
-sudo apt-get install opencv-contrib-python
-```
+No Linux packages explicitly required for now.  Check the Dockerfile for more info, though.
 
 ## Python
+
+These are the required python packages.  You don't need to install OpenCV via Pip if you compiled if from source.
 
 * numpy
 * paho-mqtt
 * vizier
-* opencv-contrib-python (?)
-
+* opencv-contrib-python
 

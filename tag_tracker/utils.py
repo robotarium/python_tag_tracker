@@ -47,27 +47,10 @@ def load_camera_calib(filename):
     return (cam_matrix, dist_coeffs, proj_matrix)
 
 
-def load_homography(filename):
-    """ Loads OpenCV homography from a YAML file.
-
-        Args:
-            filename (str): Path to homography YAML file
-    """
-
-    # Load what should be detector parameters in a YAML file
-    try:
-        f = open(filename, 'r')
-        f_yaml = yaml.load(f)
-    except Exception as e:
-        print(repr(e))
-
-    return np.array(f_yaml['homography'])
-
-
 def load_ref_markers(filename):
     """ Load reference markers from a YAML file.  These markers determine the workspace area.
 
-        Args: 
+        Args:
             filename (str): Path to YAML file containing the reference marker locations and IDs
     """
 
@@ -78,15 +61,13 @@ def load_ref_markers(filename):
     except Exception as e:
         print(repr(e))
 
-
     markers = f_yaml['markers']
     ref_markers = {}
     # 2 b.c. they're (X, y) positions
-    ref_markers_world = np.zeros((len(markers), 2)) 
+    ref_markers_world = np.zeros((len(markers), 2))
 
     for i, m in enumerate(markers):
         ref_markers[m['id']] = i
         ref_markers_world[i, :] = np.array((m['x'], m['y']))
 
     return (ref_markers, ref_markers_world)
-

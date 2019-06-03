@@ -2,17 +2,15 @@ import argparse
 from cv2 import aruco
 import cv2 as cv
 import vizier.node as node
-import vizier.mqttinterface as mqtt
 import numpy as np
 import time
 import threading
 import queue
-import yaml
 import json
 import concurrent.futures as futures
 from enum import Enum
 
-from tag_tracker.utils import *
+import tag_tracker.utils as utils
 
 
 # OpenCV colors
@@ -32,15 +30,14 @@ def get_data(tracker_node, ids, poses, getting_data, running, query_every=2):
         poses: dictionary containing robot data
         getting_data: dictionary containing Boolean values to declare whether valid data is being received from a particular robot
         running: Determines if the thread keeps running
-        query_every: Determines how ofter this thread queries the robots.  4 equally spaced attempts will be made to query the robots.  
+        query_every: Determines how ofter this thread queries the robots.  4 equally spaced attempts will be made to query the robots.
             For example, if query_every=2, then 4 attempts with a 0.5 s timeout will be made to query the robots.
 
     """
 
-    # Set up executor for asynchronous operation.  Allow one worker for each possible query 
+    # Set up executor for asynchronous operation.  Allow one worker for each possible query
     executor = futures.ThreadPoolExecutor(max_workers=len(ids))
-    # 
-    links = list([i+'/status' for i in ids])
+    links = list([i + '/status' for i in ids])
 
     attempts = 4
 
@@ -48,7 +45,7 @@ def get_data(tracker_node, ids, poses, getting_data, running, query_every=2):
         current_time = time.time()
         data = []
         try:
-            data = list(executor.map(lambda x: tracker_node.get(x, timeout=0.5, attempts=attempts), links, timeout=2*query_every))
+            data = list(executor.map(lambda x: tracker_node.get(x, timeout=0.5, attempts=attempts), links, timeout=2 * query_every))
         except Exception as e:
             print(repr(e))
 
@@ -96,6 +93,7 @@ class States(Enum):
 def main():
 
     parser = argparse.ArgumentParser()
+    # Optional arguments
     parser.add_argument('--params', help='path to detector AruCo parameters (YAML file)', default='config/detector_params.yml')
     parser.add_argument('--calib', help='path to camera calibration (YAML file)', default='config/camera_calib.yml')
     parser.add_argument('--dev', type=int, help='Input video device number', default=0)
@@ -105,7 +103,8 @@ def main():
     parser.add_argument('--host', help='IP of MQTT broker', default='localhost')
     parser.add_argument('--port', type=int, help='Port of MQTT broker', default=1884)
     parser.add_argument('--query', help='How often to query robots for status data (e.g., battery voltage)', type=float, default=2)
-    
+
+    # Required arguments
     parser.add_argument('desc', help='Path to Vizier node descriptor for tracker (JSON file)')
     parser.add_argument('ref', help='Path to reference marker (YAML file)')
 
@@ -124,31 +123,31 @@ def main():
 
     # Set up capture device.  Should be a webcam!
     cap = cv.VideoCapture(args.dev)
- 
+
     if not cap.isOpened():
         print("Could not open video camera.  Exiting")
         return
- 
+
     # Set width and height of frames in pixels
     cap.set(3, args.width)
     cap.set(4, args.height)
 
     # HAVE to change codec for frame rate
     codec = cv.VideoWriter_fourcc('M', 'J', 'P', 'G')
-    cap.set(cv.CAP_PROP_FOURCC, codec);
+    cap.set(cv.CAP_PROP_FOURCC, codec)
     # Apparently, we NEED to set FPS here...
     cap.set(cv.CAP_PROP_FPS, 30)
 
     # Load aruco parameters from file
     aruco_dict = aruco.Dictionary_get(aruco.DICT_4X4_100)
     parameters = aruco.DetectorParameters_create()
-    load_detector_params(args.params, parameters)
+    utils.load_detector_params(args.params, parameters)
 
     # Load camera calibration from file
-    cam_matrix, dist_coeffs, proj_matrix = load_camera_calib(args.calib)
+    cam_matrix, dist_coeffs, proj_matrix = utils.load_camera_calib(args.calib)
 
     # Load reference markers so we can ignore them
-    reference_markers, ref_markers_world = load_ref_markers(args.ref)
+    reference_markers, ref_markers_world = utils.load_ref_markers(args.ref)
 
     # Start camera capture thread in backgroun
     read_from_camera_running = [True]
@@ -157,11 +156,11 @@ def main():
     read_from_camera_thread.start()
 
     possible_ids = set({x.split('/')[0] for x in tracker_node.gettable_links})
-    poses = dict({x : {'x': 0, 'y': 0, 'theta': 0, 'batt_volt': -1, 'charge_status': False} for x in possible_ids})
-    getting_data = dict({x : {'viz': False, 'image': False} for x in possible_ids})
+    poses = dict({x: {'x': 0, 'y': 0, 'theta': 0, 'batt_volt': -1, 'charge_status': False} for x in possible_ids})
+    getting_data = dict({x: {'viz': False, 'image': False} for x in possible_ids})
 
     print('Tracking robots:', possible_ids)
-    
+
     # This is a list containing a bool so we can pass by reference
     get_data_thread_running = [True]
     get_data_thread = threading.Thread(target=get_data, args=(tracker_node, list(possible_ids), poses, getting_data, get_data_thread_running), kwargs={'query_every': args.query})
@@ -176,12 +175,13 @@ def main():
     # Gain for exponential filter
     alpha = 0.1
 
+    # For homography
+    H = None
+
     # STATE VARIABLE
     state = States.HOMOGRAPHY
 
-
-    # FIND HOMOGRAPHY
-    H = None
+    # Main loop of program
     while(True):
 
         start = time.time()
@@ -192,11 +192,12 @@ def main():
         while True:
             try:
                 ret, frame = frame_queue.get_nowait()
-            except queue.Empty as e:
+            except queue.Empty:
                 break
 
         if(not ret):
             print('Could not get frame')
+            # Skip this iteration if there is not a valid frame
             continue
 
         # convert to grayscale and find markers with aruco
@@ -206,8 +207,8 @@ def main():
         # I can do what I want with corners now
         aruco.drawDetectedMarkers(gray, corners, ids, _VISIBLE_COLOR)
 
+        # Find the homography from image data
         if(state == States.HOMOGRAPHY):
-            # Find homography from image data
             if(len(corners) > 0):
                 for i in range(ids.shape[0]):
                     cv.undistortPoints(corners[i], cam_matrix, dist_coeffs, dst=corners[i], P=proj_matrix)
@@ -215,30 +216,30 @@ def main():
             ref_markers_image = np.zeros((len(reference_markers), 2))
             found = 0
             if ids is not None:
-               for i in range(ids.shape[0]):
-                    if(ids[i][0] in reference_markers):
+                for i in range(ids.shape[0]):
+                    if ids[i][0] in reference_markers:
                         found += 1
-                        ref_markers_image[reference_markers[ids[i][0]], :] = np.mean(corners[i][0], axis=0) # Compute mean along columns
+                        ref_markers_image[reference_markers[ids[i][0]], :] = np.mean(corners[i][0], axis=0)  # Compute mean along columns
 
             H = None
             if found == len(reference_markers):
-                print('Found', '('+repr(found)+')', 'all', '('+repr(len(reference_markers))+')', 'reference markers.  Calculating homography')
+                print('Found', '(' + repr(found) + ')', 'all', '(' + repr(len(reference_markers)) + ')', 'reference markers.  Calculating homography')
                 H = cv.findHomography(ref_markers_image, ref_markers_world)[0]
 
-        
+            # Make sure that homography is valid
             if H is not None:
                 if(abs(np.linalg.det(H)) <= 0.001):
                     print('Warning: H is close to losing invertibility')
 
                 print('Homography found.  Going to tracking state')
                 state = States.TRACKING
-        
+
             # GRAPHICS
             cv.putText(gray, 'Searching for reference_markers: ' + repr([x for x in reference_markers]),
                        (10, 30), cv.FONT_HERSHEY_PLAIN, 1, (255, 255, 255), thickness=1)
 
+        # Tracking state.  Estimate poses of robots using homography
         elif(state == States.TRACKING):
-            # Determine poses of robots from image coordinates
             to_send = {}
             if(len(corners) > 0):
                 for i in range(ids.shape[0]):
@@ -265,10 +266,10 @@ def main():
                     tag_pos = cv.convertPointsFromHomogeneous(hom)
 
                     # Compute position as the average of the positions of the four corners
-                    position = 0.25*(tag_pos[0][0] + tag_pos[1][0] + tag_pos[2][0] + tag_pos[3][0])
+                    position = 0.25 * (tag_pos[0][0] + tag_pos[1][0] + tag_pos[2][0] + tag_pos[3][0])
 
                     # TODO: What is this?
-                    forward_vector = 0.5*(tag_pos[1][0] + tag_pos[2][0] - tag_pos[0][0] - tag_pos[3][0])
+                    forward_vector = 0.5 * (tag_pos[1][0] + tag_pos[2][0] - tag_pos[0][0] - tag_pos[3][0])
 
                     # Assemble poses JSON in the assumed format
                     # TODO: If I want to share this between threads, I can't re-init the dict.  It blows away the other changes
@@ -282,7 +283,7 @@ def main():
                     if(getting_data[tag_id_str]['image'] and getting_data[tag_id_str]['viz']):
                         to_send[tag_id_str] = poses[tag_id_str]
 
-                # Send poses on 
+                # Send poses on
                 if(len(to_send) > 0):
                     tracker_node.publish(publish_topic, json.dumps(to_send).encode())
 
@@ -290,21 +291,21 @@ def main():
 
             # Update exponential filter for FPS
             elapsed = time.time() - start
-            avg_proc_time = (1-alpha)*avg_proc_time + alpha*elapsed
-
+            avg_proc_time = (1 - alpha) * avg_proc_time + alpha * elapsed
 
             # GRAPHICS STUFF
-            cv.putText(gray, 'FPS: ' + repr(int(1/avg_proc_time)) + ' <- should be > 30',
+            cv.putText(gray, 'FPS: ' + repr(int(1 / avg_proc_time)) + ' <- should be > 30',
                        (10, 30), cv.FONT_HERSHEY_PLAIN, 1, _VISIBLE_COLOR, thickness=1)
             cv.putText(gray, 'Q: ' + repr(frame_queue.qsize()) + ' <- should be small',
                        (10, 50), cv.FONT_HERSHEY_PLAIN, 1, _VISIBLE_COLOR, thickness=1)
 
-        #for i in range(len(rvecs)):
-            #aruco.drawAxis(gray, cam_matrix, dist_coeffs, rvecs[i], tvecs[i], 0.1)
+        # for i in range(len(rvecs)):
+            # aruco.drawAxis(gray, cam_matrix, dist_coeffs, rvecs[i], tvecs[i], 0.1)
 
             cv.putText(gray, 'Press "h" to re-find homography',
                        (10, 70), cv.FONT_HERSHEY_PLAIN, 1, _VISIBLE_COLOR, thickness=1)
         else:
+            # This should NEVER happen
             print('Critical error in state.  State undefined')
             state = States.HOMOGRAPHY
 
@@ -312,12 +313,13 @@ def main():
 
         key = cv.waitKey(1)
 
+        # If 'q' is pressed, quit the main loop
         if(key == ord('q')):
             break
 
+        # If 'h' is pressed, re-find the homography
         if(key == ord('h')):
             state = States.HOMOGRAPHY
-
 
     # Stop MQTT client
     tracker_node.stop()
@@ -334,4 +336,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

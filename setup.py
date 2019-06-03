@@ -13,7 +13,7 @@ EMAIL = 'pglotfel@gmail.com'
 AUTHOR = 'Paul Glotfelter'
 
 # What packages are required for this module to be executed?
-REQUIRED = ['opencv-contrib-python']
+REQUIRED = []
 
 # The rest you shouldn't have to touch too much :)
 # ------------------------------------------------
